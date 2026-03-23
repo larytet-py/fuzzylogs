@@ -18,7 +18,7 @@ Usage examples:
     python fuzzylogs.py --logfile logs.csv --replace-abbreviaitions > fuzzy_log.csv
 
     # Process a logfile and also compute pattern statistics with Jaccard clustering
-    python fuzzylogs.py --logfile logs.csv --pattern-stats --match-threshold 0.7 --show-progress > fuzzy_log.csv
+    python fuzzylogs.py --logfile logs.csv --pattern-stats --match-threshold 0.7 --workers 5 --show-progress > fuzzy_log.csv
 """
 
 import argparse
