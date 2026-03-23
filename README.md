@@ -49,7 +49,7 @@ Pattern statistics
 ## Usage 
 
 ```
-python fuzzylogs.py --logfile logs.csv --pattern-stats --match-threshold 0.7 > out.csv
+python fuzzylogs.py --logfile logs.csv --pattern-stats --match-threshold 0.7 --workers 2 --show-progress > out.csv
 ```
 
 Performance is ~100KB/s per core
