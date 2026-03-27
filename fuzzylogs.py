@@ -14,16 +14,22 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import multiprocessing
 import os
 import re
 import sys
 from collections import defaultdict
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Iterable, List, Optional, DefaultDict, Set
+from typing import Any, DefaultDict, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
-from jaccard import Jaccard, cluster_pattern_line
+from jaccard import (
+    Jaccard,
+    cluster_pattern_line,
+    default_tokenizer,
+    match_token_set,
+    signature_from_tokens,
+)
 from markovchain import MarkovChain
-
 
 DEFAULT_DICT_PATHS = [
     "/usr/share/dict/words",
@@ -32,6 +38,12 @@ DEFAULT_DICT_PATHS = [
 
 ABBREVIATIONS_REGEX = re.compile(r"^[A-Z]{1,4}$")
 WORD_SPLIT_REGEX = re.compile(r"([^A-Za-z0-9]+)")
+ABBREVIATION_PLACEHOLDER = "ABBR"
+_DEFAULT_MARKOV_SCORE_THRESHOLD = -3.5
+_DEFAULT_CHUNK_SIZE = 1_024
+
+_MARKOV_WORKER_MARKOV_CHAIN: Optional[MarkovChain] = None
+_MARKOV_WORKER_REPLACE_ABBREVIATIONS: bool = False
 
 
 @dataclass
@@ -55,6 +67,14 @@ class Result:
             "counts": self.counts,
             "metadata": self.metadata,
         }
+
+
+@dataclass
+class _SignatureCount:
+    first_row_index: int
+    representative_line: str
+    pattern_signature: str
+    count: int
 
 
 def _diag(message: str, quiet: bool) -> None:
@@ -86,10 +106,12 @@ def build_markov_chain(
     domain_words: List[str],
     order: int,
     smoothing: float,
+    threshold: float = _DEFAULT_MARKOV_SCORE_THRESHOLD,
+    max_dictionary_words: Optional[int] = None,
     quiet: bool = False,
 ) -> MarkovChain:
     _diag(f"Loading dictionary from: {dict_path}", quiet=quiet)
-    base_words = load_words(dict_path)
+    base_words = load_words(dict_path, max_words=max_dictionary_words)
     _diag(f"Loaded {len(base_words)} base words", quiet=quiet)
     if domain_words:
         _diag(f"Adding domain words: {', '.join(domain_words)}", quiet=quiet)
@@ -99,6 +121,7 @@ def build_markov_chain(
         domain_words=domain_words,
         order=order,
         smoothing=smoothing,
+        default_score_threshold=threshold,
     )
     _diag(
         f"MarkovChain initialized (order={model.order_n()}, alphabet_size={len(model.known_alphabet())})",
@@ -116,6 +139,7 @@ def fuzz_text_cell(
     mc: MarkovChain,
     threshold: float,
     replace_abbreviations: bool,
+    token_cache: Optional[Dict[str, str]] = None,
 ) -> str:
     if not text:
         return text
@@ -128,27 +152,323 @@ def fuzz_text_cell(
             out.append(part)
             continue
 
-        if replace_abbreviations and is_abbreviation(part):
-            out.append(".")
-            continue
+        if token_cache is not None:
+            cached = token_cache.get(part)
+            if cached is not None:
+                out.append(cached)
+                continue
 
-        if mc.is_english_like(part, threshold=threshold):
-            out.append(part)
+        if replace_abbreviations and is_abbreviation(part):
+            fuzzed = ABBREVIATION_PLACEHOLDER
+        elif mc.is_english_like(part, threshold=threshold):
+            fuzzed = part
         else:
-            out.append(".")
+            fuzzed = "."
+
+        if token_cache is not None:
+            token_cache[part] = fuzzed
+
+        out.append(fuzzed)
 
     return "".join(out)
 
 
-def _cluster_patterns(lines: Iterable[str], match_threshold: float) -> List[Dict[str, Any]]:
-    jaccard = Jaccard()
+
+def _validate_worker_count(value: Optional[int], default: int = 1) -> int:
+    if value is None:
+        return default
+    count = int(value)
+    if count <= 0:
+        raise ValueError("worker count must be positive")
+    return count
+
+
+def _load_dictionary_words(dictionary_path: str, max_dictionary_words: Optional[int]) -> List[str]:
+    return load_words(dictionary_path, max_words=max_dictionary_words)
+
+
+def _init_markov_fuzz_worker(
+    dictionary_path: str,
+    domain_words: Sequence[str],
+    markov_order: int,
+    markov_smoothing: float,
+    markov_score_threshold: float,
+    replace_abbreviations: bool,
+    max_dictionary_words: Optional[int],
+) -> None:
+    global _MARKOV_WORKER_MARKOV_CHAIN
+    global _MARKOV_WORKER_REPLACE_ABBREVIATIONS
+
+    _MARKOV_WORKER_REPLACE_ABBREVIATIONS = replace_abbreviations
+
+    if _MARKOV_WORKER_MARKOV_CHAIN is None:
+        base_words = _load_dictionary_words(
+            dictionary_path,
+            max_dictionary_words,
+        )
+        _MARKOV_WORKER_MARKOV_CHAIN = MarkovChain(
+            base_words,
+            domain_words=list(domain_words),
+            order=markov_order,
+            smoothing=markov_smoothing,
+            default_score_threshold=markov_score_threshold,
+        )
+
+
+def _fuzz_row_chunk(rows: Sequence[Sequence[str]]) -> List[List[str]]:
+    if _MARKOV_WORKER_MARKOV_CHAIN is None:
+        raise RuntimeError("Markov worker has not been initialized")
+
+    token_cache: Dict[str, str] = {}
+    return [
+        [
+            fuzz_text_cell(
+                cell,
+                _MARKOV_WORKER_MARKOV_CHAIN,
+                threshold=_MARKOV_WORKER_MARKOV_CHAIN.default_score_threshold,
+                replace_abbreviations=_MARKOV_WORKER_REPLACE_ABBREVIATIONS,
+                token_cache=token_cache,
+            )
+            for cell in row
+        ]
+        for row in rows
+    ]
+
+
+def _iter_row_chunks(reader: Iterable[Sequence[str]], chunk_size: int) -> Iterable[List[List[str]]]:
+    chunk: List[List[str]] = []
+    for row in reader:
+        chunk.append(list(row))
+        if len(chunk) >= chunk_size:
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
+
+
+def _fuzz_csv_single_process(
+    reader: Iterable[Sequence[str]],
+    mc: MarkovChain,
+    threshold: float,
+    replace_abbreviations: bool,
+) -> List[str]:
+    fuzzed_lines: List[str] = []
+    token_cache: Dict[str, str] = {}
+
+    for row in reader:
+        fuzzed_cells = [
+            fuzz_text_cell(cell, mc, threshold=threshold, replace_abbreviations=replace_abbreviations, token_cache=token_cache)
+            for cell in row
+        ]
+        fuzzed_lines.append(" ".join(fuzzed_cells))
+
+    return fuzzed_lines
+
+
+def _fuzz_csv_multi_process(
+    reader: Iterable[Sequence[str]],
+    dictionary_path: str,
+    domain_words: List[str],
+    markov_order: int,
+    markov_smoothing: float,
+    markov_score_threshold: float,
+    replace_abbreviations: bool,
+    max_dictionary_words: Optional[int],
+    workers: int,
+    chunk_size: int,
+    mc: Optional[MarkovChain],
+) -> List[str]:
+    global _MARKOV_WORKER_MARKOV_CHAIN
+
+    fuzzed_lines: List[str] = []
+    pool_factory = multiprocessing.Pool
+    inherited_markov_chain = False
+
+    if mc is not None:
+        try:
+            pool_factory = multiprocessing.get_context("fork").Pool
+            _MARKOV_WORKER_MARKOV_CHAIN = mc
+            inherited_markov_chain = True
+        except ValueError:
+            inherited_markov_chain = False
+
+    with pool_factory(
+        processes=workers,
+        initializer=_init_markov_fuzz_worker,
+        initargs=(
+            dictionary_path,
+            tuple(domain_words),
+            markov_order,
+            markov_smoothing,
+            markov_score_threshold,
+            replace_abbreviations,
+            max_dictionary_words,
+        ),
+    ) as pool:
+        chunk_iter = _iter_row_chunks(reader, chunk_size)
+        for fuzzed_chunk in pool.imap(_fuzz_row_chunk, chunk_iter, chunksize=1):
+            for fuzzed_row in fuzzed_chunk:
+                fuzzed_lines.append(" ".join(fuzzed_row))
+
+    if inherited_markov_chain:
+        _MARKOV_WORKER_MARKOV_CHAIN = None
+
+    return fuzzed_lines
+
+
+def _fuzz_csv_rows(
+    path: str,
+    *,
+    mc: MarkovChain,
+    threshold: float,
+    replace_abbreviations: bool,
+    dictionary_path: str,
+    domain_words: List[str],
+    order: int,
+    smoothing: float,
+    max_dictionary_words: Optional[int],
+    workers: int,
+    chunk_size: int,
+) -> List[str]:
+    effective_workers = max(1, workers)
+    chunk_size = max(1, chunk_size)
+
+    if effective_workers == 1:
+        with open(path, "r", encoding="utf-8", errors="ignore", newline="") as input_file:
+            reader = csv.reader(input_file)
+            return _fuzz_csv_single_process(
+                reader,
+                mc,
+                threshold,
+                replace_abbreviations,
+            )
+
+    with open(path, "r", encoding="utf-8", errors="ignore", newline="") as input_file:
+        reader = csv.reader(input_file)
+        return _fuzz_csv_multi_process(
+            reader,
+            dictionary_path,
+            domain_words,
+            order,
+            smoothing,
+            threshold,
+            replace_abbreviations,
+            max_dictionary_words,
+            effective_workers,
+            chunk_size,
+            mc,
+        )
+
+
+def _pattern_signature(text: str) -> str:
+    return signature_from_tokens(match_token_set(text, tokenizer=default_tokenizer))
+
+
+def _count_normalized_signatures_chunk(
+    indexed_lines: Sequence[Tuple[int, str]]
+) -> List[_SignatureCount]:
+    counts_by_signature: Dict[str, _SignatureCount] = {}
+
+    for row_index, line in indexed_lines:
+        signature = _pattern_signature(line)
+        existing = counts_by_signature.get(signature)
+        if existing is None:
+            counts_by_signature[signature] = _SignatureCount(
+                first_row_index=row_index,
+                representative_line=line,
+                pattern_signature=signature,
+                count=1,
+            )
+        else:
+            existing.count += 1
+
+    return list(counts_by_signature.values())
+
+
+def _iter_indexed_line_chunks(
+    lines: Iterable[str],
+    chunk_size: int,
+) -> Iterable[List[Tuple[int, str]]]:
+    chunk: List[Tuple[int, str]] = []
+    for idx, line in enumerate(lines):
+        chunk.append((idx, line))
+        if len(chunk) >= chunk_size:
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
+
+
+def _merge_signature_count_chunk(
+    merged_counts: Dict[str, _SignatureCount],
+    chunk_counts: Sequence[_SignatureCount],
+) -> int:
+    processed_rows = 0
+    for signature_count in chunk_counts:
+        processed_rows += signature_count.count
+        existing = merged_counts.get(signature_count.pattern_signature)
+        if existing is None:
+            merged_counts[signature_count.pattern_signature] = _SignatureCount(
+                first_row_index=signature_count.first_row_index,
+                representative_line=signature_count.representative_line,
+                pattern_signature=signature_count.pattern_signature,
+                count=signature_count.count,
+            )
+            continue
+
+        existing.count += signature_count.count
+        if signature_count.first_row_index < existing.first_row_index:
+            existing.first_row_index = signature_count.first_row_index
+            existing.representative_line = signature_count.representative_line
+
+    return processed_rows
+
+
+def _iter_signature_count_results(
+    chunk_iter: Iterable[List[Tuple[int, str]]],
+    workers: int,
+) -> Iterable[List[_SignatureCount]]:
+    if workers <= 1:
+        for chunk in chunk_iter:
+            yield _count_normalized_signatures_chunk(chunk)
+        return
+
+    with multiprocessing.Pool(processes=workers) as pool:
+        yield from pool.imap(_count_normalized_signatures_chunk, chunk_iter, chunksize=1)
+
+
+def _build_normalized_signature_counts(
+    lines: Iterable[str],
+    *,
+    workers: int,
+    chunk_size: int,
+) -> List[_SignatureCount]:
+    effective_workers = max(1, workers)
+    chunk_size = max(1, chunk_size)
+
+    merged_counts: Dict[str, _SignatureCount] = {}
+    chunk_iter = _iter_indexed_line_chunks(lines, chunk_size)
+
+    for chunk_counts in _iter_signature_count_results(chunk_iter, effective_workers):
+        _merge_signature_count_chunk(merged_counts, chunk_counts)
+
+    ordered_counts = sorted(merged_counts.values(), key=lambda item: item.first_row_index)
+    return ordered_counts
+
+
+def _cluster_patterns(
+    lines: Iterable[Tuple[str, int]],
+    match_threshold: float,
+) -> Tuple[List[Dict[str, Any]], int]:
     patterns: List[Dict[str, Any]] = []
     token_index: DefaultDict[str, Set[int]] = defaultdict(set)
+    total_lines = 0
+    jaccard = Jaccard()
 
-    for line in lines:
-        cluster_pattern_line(
+    for line, line_count in lines:
+        total_lines += cluster_pattern_line(
             line=line,
-            line_count=1,
+            line_count=line_count,
             patterns=patterns,
             token_to_pattern_ids=token_index,
             jaccard=jaccard,
@@ -156,7 +476,7 @@ def _cluster_patterns(lines: Iterable[str], match_threshold: float) -> List[Dict
         )
 
     patterns.sort(key=lambda p: int(p["count"]), reverse=True)
-    return patterns
+    return patterns, total_lines
 
 
 def _build_result(
@@ -194,6 +514,28 @@ def _build_result(
     )
 
 
+def _analyze_fuzzed_lines(
+    fuzzed_lines: List[str],
+    *,
+    match_threshold: float,
+    source_type: str,
+    signature_workers: int,
+    chunk_size: int,
+) -> Result:
+    normalized = _build_normalized_signature_counts(
+        fuzzed_lines,
+        workers=signature_workers,
+        chunk_size=chunk_size,
+    )
+
+    clustered, total_lines = _cluster_patterns(
+        ((item.representative_line, item.count) for item in normalized),
+        match_threshold=match_threshold,
+    )
+
+    return _build_result(clustered, total_lines, match_threshold=match_threshold, source_type=source_type)
+
+
 def _choose_dict_path(dict_path: Optional[str]) -> str:
     if dict_path:
         if not os.path.isfile(dict_path):
@@ -209,12 +551,14 @@ def analyze_lines(
     domain_words: Optional[List[str]] = None,
     order: int = 3,
     smoothing: float = 1.0,
-    threshold: float = -3.5,
+    threshold: float = _DEFAULT_MARKOV_SCORE_THRESHOLD,
     replace_abbreviations: bool = False,
     match_threshold: float = 0.7,
     quiet: bool = True,
+    workers: Optional[int] = None,
+    signature_workers: Optional[int] = None,
+    chunk_size: int = _DEFAULT_CHUNK_SIZE,
 ) -> Result:
-    """Analyze a list of log lines and return structured pattern data."""
     domain_words = domain_words or []
     chosen_dict_path = _choose_dict_path(dict_path)
 
@@ -223,16 +567,33 @@ def analyze_lines(
         domain_words=domain_words,
         order=order,
         smoothing=smoothing,
+        threshold=threshold,
         quiet=quiet,
     )
 
-    fuzzed_lines = [
-        fuzz_text_cell(line, mc, threshold=threshold, replace_abbreviations=replace_abbreviations)
-        for line in lines
-    ]
+    fuzzed_lines: List[str] = []
+    token_cache: Dict[str, str] = {}
+    for line in lines:
+        fuzzed_lines.append(
+            fuzz_text_cell(
+                line,
+                mc,
+                threshold=threshold,
+                replace_abbreviations=replace_abbreviations,
+                token_cache=token_cache,
+            )
+        )
 
-    clustered = _cluster_patterns(fuzzed_lines, match_threshold=match_threshold)
-    return _build_result(clustered, total_lines=len(fuzzed_lines), match_threshold=match_threshold, source_type="lines")
+    resolved_workers = _validate_worker_count(workers, default=1)
+    resolved_signature_workers = _validate_worker_count(signature_workers, default=resolved_workers)
+
+    return _analyze_fuzzed_lines(
+        fuzzed_lines,
+        match_threshold=match_threshold,
+        source_type="lines",
+        signature_workers=resolved_signature_workers,
+        chunk_size=chunk_size,
+    )
 
 
 def analyze_csv(
@@ -242,47 +603,59 @@ def analyze_csv(
     domain_words: Optional[List[str]] = None,
     order: int = 3,
     smoothing: float = 1.0,
-    threshold: float = -3.5,
+    threshold: float = _DEFAULT_MARKOV_SCORE_THRESHOLD,
     replace_abbreviations: bool = False,
     match_threshold: float = 0.7,
     quiet: bool = True,
     show_progress: bool = False,
+    workers: Optional[int] = None,
+    signature_workers: Optional[int] = None,
+    chunk_size: int = _DEFAULT_CHUNK_SIZE,
+    max_dictionary_words: Optional[int] = None,
 ) -> Result:
-    """
-    Analyze rows from a CSV file and return structured pattern data.
-
-    Each row is fuzzed cell-by-cell, then joined into one representative line.
-    """
     if not os.path.isfile(path):
         raise FileNotFoundError(f"Logfile not found: {path}")
 
     domain_words = domain_words or []
     chosen_dict_path = _choose_dict_path(dict_path)
 
+    resolved_workers = _validate_worker_count(workers, default=1)
+    resolved_signature_workers = _validate_worker_count(signature_workers, default=resolved_workers)
+
     mc = build_markov_chain(
         dict_path=chosen_dict_path,
         domain_words=domain_words,
         order=order,
         smoothing=smoothing,
+        threshold=threshold,
+        max_dictionary_words=max_dictionary_words,
         quiet=quiet,
     )
 
-    fuzzed_lines: List[str] = []
+    fuzzed_lines = _fuzz_csv_rows(
+        path,
+        mc=mc,
+        threshold=threshold,
+        replace_abbreviations=replace_abbreviations,
+        dictionary_path=chosen_dict_path,
+        domain_words=domain_words,
+        order=order,
+        smoothing=smoothing,
+        max_dictionary_words=max_dictionary_words,
+        workers=resolved_workers,
+        chunk_size=chunk_size,
+    )
 
-    with open(path, "r", encoding="utf-8", errors="ignore", newline="") as f:
-        reader = csv.reader(f)
-        for idx, row in enumerate(reader, start=1):
-            fuzzed_row = [
-                fuzz_text_cell(cell, mc, threshold=threshold, replace_abbreviations=replace_abbreviations)
-                for cell in row
-            ]
-            fuzzed_lines.append(" ".join(fuzzed_row))
+    if show_progress and not quiet:
+        print(f"Processed {len(fuzzed_lines)} rows", file=sys.stderr)
 
-            if show_progress and not quiet and idx % 1000 == 0:
-                print(f"Processed {idx} rows", file=sys.stderr)
-
-    clustered = _cluster_patterns(fuzzed_lines, match_threshold=match_threshold)
-    return _build_result(clustered, total_lines=len(fuzzed_lines), match_threshold=match_threshold, source_type="csv")
+    return _analyze_fuzzed_lines(
+        fuzzed_lines,
+        match_threshold=match_threshold,
+        source_type="csv",
+        signature_workers=resolved_signature_workers,
+        chunk_size=chunk_size,
+    )
 
 
 def _print_summary(result: Result) -> None:
@@ -334,11 +707,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--domain-words", type=str, nargs="*", default=[])
     parser.add_argument("--order", type=int, default=3)
     parser.add_argument("--smoothing", type=float, default=1.0)
-    parser.add_argument("--threshold", type=float, default=-3.5)
+    parser.add_argument("--threshold", type=float, default=_DEFAULT_MARKOV_SCORE_THRESHOLD)
+    parser.add_argument("--max-dictionary-words", type=int, default=None)
+
+    parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--signature-workers", type=int, default=None)
+    parser.add_argument("--chunk-size", type=int, default=_DEFAULT_CHUNK_SIZE)
 
     parser.add_argument("--logfile", type=str, default=None)
 
-    # Keep typo variant for backwards compatibility.
     parser.add_argument("--replace-abbreviaitions", action="store_true", default=False)
     parser.add_argument("--replace-abbreviations", action="store_true", default=False)
 
@@ -365,7 +742,6 @@ def _run_legacy_csv_output(
     threshold: float,
     replace_abbreviations: bool,
 ) -> None:
-    """Backwards-compatible mode: print fuzzed CSV rows to stdout."""
     with open(logfile, "r", encoding="utf-8", errors="ignore", newline="") as f_in:
         reader = csv.reader(f_in)
         writer = csv.writer(sys.stdout, lineterminator="\n")
@@ -383,22 +759,23 @@ def main() -> None:
 
     replace_abbreviations = args.replace_abbreviaitions or args.replace_abbreviations
 
-    # Word-scoring mode remains supported.
-    if args.words and not args.logfile:
-        try:
+    try:
+        if args.words and not args.logfile:
             chosen_dict = _choose_dict_path(args.dict_path)
             mc = build_markov_chain(
                 dict_path=chosen_dict,
                 domain_words=args.domain_words,
                 order=args.order,
                 smoothing=args.smoothing,
+                threshold=args.threshold,
+                max_dictionary_words=args.max_dictionary_words,
                 quiet=args.quiet,
             )
             score_words(mc, args.words, threshold=args.threshold)
             return
-        except Exception as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            sys.exit(1)
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     if not args.logfile:
         print("Error: --logfile is required unless scoring positional words.", file=sys.stderr)
@@ -412,6 +789,8 @@ def main() -> None:
                 domain_words=args.domain_words,
                 order=args.order,
                 smoothing=args.smoothing,
+                threshold=args.threshold,
+                max_dictionary_words=args.max_dictionary_words,
                 quiet=args.quiet,
             )
             _run_legacy_csv_output(
@@ -433,6 +812,10 @@ def main() -> None:
             match_threshold=args.match_threshold,
             quiet=args.quiet,
             show_progress=args.show_progress,
+            workers=args.workers,
+            signature_workers=args.signature_workers,
+            chunk_size=args.chunk_size,
+            max_dictionary_words=args.max_dictionary_words,
         )
 
         if args.output_format == "csv":
