@@ -21,6 +21,7 @@ class MarkovChain:
         order: int = 3,
         smoothing: float = 1.0,
         lowercase: bool = True,
+        default_score_threshold: float = -3.5,
     ) -> None:
         """
         Parameters
@@ -36,41 +37,32 @@ class MarkovChain:
             (Laplace smoothing).
         lowercase
             If True, all words are lowercased before modeling.
+        default_score_threshold
+            Per-character log-probability below which tokens are fuzzed.
         """
         self.order = order
         self.smoothing = smoothing
         self.lowercase = lowercase
+        self.default_score_threshold = default_score_threshold
 
-        # Special tokens
         self._start_token = "^"
         self._end_token = "$"
 
-        # All words known to the model (base + domain)
         self._words: List[str] = []
-
-        # Character vocabulary (excluding start token, including end token)
         self._alphabet: Set[str] = set()
-
-        # Context -> next-char counts
         self._transition_counts: DefaultDict[str, DefaultDict[str, float]] = defaultdict(
             lambda: defaultdict(float)
         )
-
-        # Pre-summed totals for each context
         self._context_totals: Dict[str, float] = {}
+        self._unknown_probability: float = 1e-12
 
-        # Fallback probability for unknown contexts/chars
-        self._unknown_prob: float = 1e-12
-
-        # Initialize words list
-        for w in dictionary_words:
-            self._add_word_internal(w)
+        for word in dictionary_words:
+            self._add_word_internal(word)
 
         if domain_words:
-            for w in domain_words:
-                self._add_word_internal(w)
+            for word in domain_words:
+                self._add_word_internal(word)
 
-        # Fit the Markov model
         self._fit_markov_model()
 
     # ------------------------------------------------------------------ #
@@ -80,91 +72,59 @@ class MarkovChain:
     def probability(self, word: str) -> float:
         """
         Return P(word) under the learned character-level Markov model.
-
-        This is usually very small for long words; for comparisons
-        between words, prefer `score` or `log_probability`.
         """
         if not word:
             return 0.0
-        log_p = self.log_probability(word)
-        return math.exp(log_p)
+        return math.exp(self.log_probability(word))
 
     def log_probability(self, word: str) -> float:
         """
-        Return log P(word) under the model.
-
-        Uses character transitions with start/end tokens:
-          P(word) = Π P(c_i | previous (order-1) characters)
+        Return log P(word) under the model using character transitions.
         """
         if not word:
             return float("-inf")
 
-        w = self._normalize(word)
-        padded = self._start_token * (self.order - 1) + w + self._end_token
+        normalized = self._normalize(word)
+        padded = self._start_token * (self.order - 1) + normalized + self._end_token
         chars = list(padded)
 
-        log_p = 0.0
-        for i in range(len(chars) - self.order + 1):
-            context = "".join(chars[i : i + self.order - 1])
-            next_char = chars[i + self.order - 1]
-            log_p += self._log_prob_next_char(context, next_char)
+        log_prob = 0.0
+        for idx in range(len(chars) - self.order + 1):
+            context = "".join(chars[idx : idx + self.order - 1])
+            next_char = chars[idx + self.order - 1]
+            log_prob += self._log_prob_next_char(context, next_char)
 
-        return log_p
+        return log_prob
 
     def score(self, word: str) -> float:
         """
-        Return a per-character log-probability score:
-
-            score(word) = log P(word) / len(word)
-
-        This makes scores more comparable across different word lengths.
-        Higher scores -> more "English-like" for this model.
+        Return a per-character log-probability score to compare token length.
         """
         if not word:
             return float("-inf")
+        return self.log_probability(word) / len(word)
 
-        lp = self.log_probability(word)
-        return lp / len(word)
-
-    def is_english_like(self, word: str, threshold: float = -3.5) -> bool:
+    def is_english_like(self, word: str, threshold: float | None = None) -> bool:
         """
-        Heuristic yes/no decision: is this word plausibly part of English?
-
-        Parameters
-        ----------
-        word
-            String to test.
-        threshold
-            Per-character log-probability threshold. You should tune
-            this empirically for your use case by checking some known
-            English / non-English examples.
-
-        Returns
-        -------
-        bool
-            True if score(word) >= threshold.
+        Decide whether the token should be kept instead of fuzzed away.
         """
+        if threshold is None:
+            threshold = self.default_score_threshold
         return self.score(word) >= threshold
 
     def add_domain_words(self, words: Iterable[str]) -> None:
         """
-        Add domain-specific words to the model and update statistics.
-
-        After this call, probabilities and scores will reflect the
-        new words as part of the "dictionary".
+        Add domain-specific words and refit the transition counts.
         """
         changed = False
-        for w in words:
-            if self._add_word_internal(w):
+        for word in words:
+            if self._add_word_internal(word):
                 changed = True
-
         if changed:
             self._fit_markov_model()
 
     def known_words(self) -> List[str]:
-        """
-        Return all words currently known to the model.
-        """
+        """Return all words currently known to the model."""
         return list(self._words)
 
     def order_n(self) -> int:
@@ -172,10 +132,7 @@ class MarkovChain:
         return self.order
 
     def known_alphabet(self) -> List[str]:
-        """
-        Return the set of characters observed in the training data
-        (dictionary + domain words), including the end-of-word token '$'.
-        """
+        """Return the characters observed in the training data."""
         return sorted(self._alphabet)
 
     # ------------------------------------------------------------------ #
@@ -183,74 +140,53 @@ class MarkovChain:
     # ------------------------------------------------------------------ #
 
     def _normalize(self, word: str) -> str:
-        w = word.strip()
+        normalized = word.strip()
         if self.lowercase:
-            w = w.lower()
-        return w
+            normalized = normalized.lower()
+        return normalized
 
     def _add_word_internal(self, word: str) -> bool:
-        """
-        Add a single word to self._words and update alphabet.
-        Returns True if a non-empty word was added.
-        """
-        w = self._normalize(word)
-        if not w:
+        normalized = self._normalize(word)
+        if not normalized:
             return False
-
-        self._words.append(w)
-
-        for ch in w:
-            self._alphabet.add(ch)
-        # Ensure end token is part of alphabet
+        self._words.append(normalized)
+        for char in normalized:
+            self._alphabet.add(char)
         self._alphabet.add(self._end_token)
-
         return True
 
     def _fit_markov_model(self) -> None:
-        """
-        Build transition counts and context totals from the current words.
-        """
         self._transition_counts.clear()
         self._context_totals.clear()
 
         if not self._words:
             return
 
-        for w in self._words:
-            padded = self._start_token * (self.order - 1) + w + self._end_token
+        for word in self._words:
+            padded = self._start_token * (self.order - 1) + word + self._end_token
             chars = list(padded)
-
-            for i in range(len(chars) - self.order + 1):
-                context = "".join(chars[i : i + self.order - 1])
-                next_char = chars[i + self.order - 1]
+            for idx in range(len(chars) - self.order + 1):
+                context = "".join(chars[idx : idx + self.order - 1])
+                next_char = chars[idx + self.order - 1]
                 self._transition_counts[context][next_char] += 1.0
 
         for context, next_counts in self._transition_counts.items():
             self._context_totals[context] = sum(next_counts.values())
 
     def _log_prob_next_char(self, context: str, next_char: str) -> float:
-        """
-        Compute log P(next_char | context) with additive smoothing.
-        """
         counts = self._transition_counts.get(context)
         if not counts:
-            # Unknown context: assign a very small probability.
-            return math.log(self._unknown_prob)
+            return math.log(self._unknown_probability)
 
         total = self._context_totals[context]
         vocab_size = max(len(self._alphabet), 1)
 
         if next_char not in self._alphabet:
-            # Character never seen in training: extremely unlikely.
-            return math.log(self._unknown_prob)
+            return math.log(self._unknown_probability)
 
         count_next = counts.get(next_char, 0.0)
-        p = (count_next + self.smoothing) / (total + self.smoothing * vocab_size)
+        probability = (count_next + self.smoothing) / (total + self.smoothing * vocab_size)
+        if probability <= 0.0:
+            probability = self._unknown_probability
 
-        # Safety clamp in case of numerical issues
-        if p <= 0.0:
-            p = self._unknown_prob
-
-        return math.log(p)
-
-
+        return math.log(probability)

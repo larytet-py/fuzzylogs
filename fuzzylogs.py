@@ -17,10 +17,11 @@ import json
 import os
 import re
 import sys
+from collections import defaultdict
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, DefaultDict, Set
 
-from jaccard import Jaccard
+from jaccard import Jaccard, cluster_pattern_line
 from markovchain import MarkovChain
 
 
@@ -142,28 +143,19 @@ def fuzz_text_cell(
 def _cluster_patterns(lines: Iterable[str], match_threshold: float) -> List[Dict[str, Any]]:
     jaccard = Jaccard()
     patterns: List[Dict[str, Any]] = []
+    token_index: DefaultDict[str, Set[int]] = defaultdict(set)
 
     for line in lines:
-        best_idx = None
-        best_sim = 0.0
+        cluster_pattern_line(
+            line=line,
+            line_count=1,
+            patterns=patterns,
+            token_to_pattern_ids=token_index,
+            jaccard=jaccard,
+            match_threshold=match_threshold,
+        )
 
-        for idx, pattern in enumerate(patterns):
-            sim = jaccard.similarity(line, pattern["representative_line"])
-            if sim > best_sim:
-                best_sim = sim
-                best_idx = idx
-
-        if best_idx is not None and best_sim >= match_threshold:
-            patterns[best_idx]["count"] += 1
-        else:
-            patterns.append(
-                {
-                    "representative_line": line,
-                    "count": 1,
-                }
-            )
-
-    patterns.sort(key=lambda p: p["count"], reverse=True)
+    patterns.sort(key=lambda p: int(p["count"]), reverse=True)
     return patterns
 
 
