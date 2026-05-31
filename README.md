@@ -149,12 +149,12 @@ Measured on a 12-core machine, 100k synthetic log lines, `/usr/share/dict/words`
 
 | workers | lines/s | lines/s/core | speedup |
 |---------|---------|--------------|---------|
-| 1 | 12,041 | 12,041 | 1.00x |
-| 2 | 16,649 | 8,324 | 1.38x |
-| 4 | 22,702 | 5,676 | 1.89x |
-| 12 | 26,436 | 2,203 | 2.20x |
+| 1 | 12,651 | 12,651 | 1.00x |
+| 2 | 20,052 | 10,026 | 1.59x |
+| 4 | 35,867 | 8,967 | 2.84x |
+| 12 | 47,182 | 3,932 | 3.73x |
 
-`--workers` parallelizes both the Markov fuzzing pass and the Jaccard clustering pass. Clustering splits the deduplicated signature list into per-worker chunks, clusters each independently, then merges the partial results in a final single-threaded pass. Expect ~12k lines/s single-core, ~26k with 12 workers.
+`--workers` parallelizes both the Markov fuzzing pass and the Jaccard clustering pass. Clustering splits the deduplicated signature list into per-worker chunks, clusters each independently, then merges the partial results in a final single-threaded pass. The Markov chain is built once at startup and is not included in these numbers. Expect ~13k lines/s single-core, ~47k with 12 workers.
 
 To reproduce:
 

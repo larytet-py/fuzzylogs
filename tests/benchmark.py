@@ -49,14 +49,28 @@ def generate_csv(path: str, n: int) -> None:
             line = template.replace("{id}", _rand_id()).replace("{ip}", _rand_ip()).replace("{n}", _rand_n())
             writer.writerow([line])
 
-def run_once(csv_path: str, workers: int, dict_path: str) -> tuple:
+def run_once(csv_path: str, workers: int, dict_path: str, mc) -> tuple:
     t0 = time.perf_counter()
-    result = fuzzylogs.analyze_csv(
+    fuzzed = fuzzylogs._fuzz_csv_rows(
         csv_path,
-        dict_path=dict_path,
+        mc=mc,
+        threshold=fuzzylogs._DEFAULT_MARKOV_SCORE_THRESHOLD,
+        replace_abbreviations=False,
+        dictionary_path=dict_path,
+        domain_words=[],
+        order=3,
+        smoothing=1.0,
+        max_dictionary_words=None,
         workers=workers,
+        chunk_size=fuzzylogs._DEFAULT_CHUNK_SIZE,
+    )
+    result = fuzzylogs._analyze_fuzzed_lines(
+        fuzzed,
+        match_threshold=0.7,
+        source_type="csv",
         signature_workers=workers,
-        quiet=True,
+        cluster_workers=workers,
+        chunk_size=fuzzylogs._DEFAULT_CHUNK_SIZE,
     )
     elapsed = time.perf_counter() - t0
     return elapsed, result.counts["pattern_count"]
@@ -84,6 +98,11 @@ def main():
     generate_csv(csv_path, args.lines)
     print(f"Dictionary: {dict_path}")
     print(f"CPUs available: {cpu_count}")
+
+    print("Building Markov chain (one-time, not included in timing)...", flush=True)
+    mc = fuzzylogs.build_markov_chain(
+        dict_path=dict_path, domain_words=[], order=3, smoothing=1.0, quiet=True,
+    )
     print()
 
     baseline_throughput = None
@@ -91,9 +110,9 @@ def main():
 
     for workers in worker_counts:
         for _ in range(args.warmup):
-            run_once(csv_path, workers, dict_path)
+            run_once(csv_path, workers, dict_path, mc)
 
-        elapsed, pattern_count = run_once(csv_path, workers, dict_path)
+        elapsed, pattern_count = run_once(csv_path, workers, dict_path, mc)
         throughput = args.lines / elapsed
         if workers == 1:
             baseline_throughput = throughput
