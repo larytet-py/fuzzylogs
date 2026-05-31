@@ -145,7 +145,9 @@ python fuzzylogs.py --logfile logs.csv --output-format json --quiet \
 
 ## Performance
 
-Measured on a 12-core machine, 100k synthetic log lines, `/usr/share/dict/words`:
+Measured on a 12-core machine, `/usr/share/dict/words`.
+
+**Worker scaling** (100k lines, Markov chain built once, not included in timing):
 
 | workers | lines/s | lines/s/core | speedup |
 |---------|---------|--------------|---------|
@@ -154,12 +156,22 @@ Measured on a 12-core machine, 100k synthetic log lines, `/usr/share/dict/words`
 | 4 | 35,867 | 8,967 | 2.84x |
 | 12 | 47,182 | 3,932 | 3.73x |
 
-`--workers` parallelizes both the Markov fuzzing pass and the Jaccard clustering pass. Clustering splits the deduplicated signature list into per-worker chunks, clusters each independently, then merges the partial results in a final single-threaded pass. The Markov chain is built once at startup and is not included in these numbers. Expect ~13k lines/s single-core, ~47k with 12 workers.
+**File size scaling** (4 workers, `analyze_csv` including Markov chain build ~2s):
+
+| size | lines | time | lines/s | MB/s |
+|------|-------|------|---------|------|
+| 10 MB | 213,556 | 8.2s | 26,178 | 1.2 |
+| 20 MB | 426,814 | 13.2s | 32,374 | 1.5 |
+| 50 MB | 1,067,083 | 31.8s | 33,548 | 1.6 |
+| 100 MB | 2,134,747 | 58.8s | 36,297 | 1.7 |
+
+`--workers` parallelizes both the Markov fuzzing pass and the Jaccard clustering pass. Clustering splits the deduplicated signature list into per-worker chunks, clusters each independently, then merges the partial results in a final single-threaded pass. The Markov chain build (~2s) is a fixed cost per run regardless of input size.
 
 To reproduce:
 
 ```bash
-python tests/benchmark.py --lines 100000
+python tests/benchmark_workers.py --lines 100000  # worker scaling, Markov excluded
+python tests/benchmark.py --workers 4              # file size scaling, analyze_csv
 ```
 
 ## Tuning
