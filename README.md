@@ -20,8 +20,8 @@ fuzzylogs produces:
 
 It works in two passes:
 
-1. **Fuzz** — a Markov chain trained on an English dictionary identifies which tokens look like real words vs opaque IDs, hashes, or numbers. Non-English tokens are replaced with `.`
-2. **Cluster** — Jaccard similarity groups the fuzzed lines into patterns and counts occurrences
+1. **Fuzz** - a Markov chain trained on an English dictionary identifies which tokens look like real words vs opaque IDs, hashes, or numbers. Non-English tokens are replaced with `.`
+2. **Cluster** - Jaccard similarity groups the fuzzed lines into patterns and counts occurrences
 
 ## Install
 
@@ -47,7 +47,7 @@ python fuzzylogs.py --logfile logs.csv --output-format json --quiet > patterns.j
 python fuzzylogs.py --threshold -3.5 session ERROR abc123 uuid
 ```
 
-Input (`--logfile`) is a CSV file. Each row's cells are joined and fuzzed together. Plain `.log` files work too — wrap each line in a single CSV column or use the Python API with `analyze_lines`.
+Input (`--logfile`) is a CSV file. Each row's cells are joined and fuzzed together. Plain `.log` files work too - wrap each line in a single CSV column or use the Python API with `analyze_lines`.
 
 ## CLI flags
 
@@ -58,7 +58,7 @@ Input (`--logfile`) is a CSV file. Each row's cells are joined and fuzzed togeth
 | `--quiet` | off | Suppress progress/status messages on stderr |
 | `--print-summary` | off | Print top-10 pattern summary to stderr |
 | `--match-threshold` | `0.7` | Jaccard similarity threshold for grouping lines (0–1, lower = more aggressive merging) |
-| `--threshold` | `-3.5` | Markov score cutoff — tokens scoring below this are replaced with `.` |
+| `--threshold` | `-3.5` | Markov score cutoff - tokens scoring below this are replaced with `.` |
 | `--replace-abbreviations` | off | Also replace short all-caps tokens (e.g. `UUID`, `HTTP`) with a placeholder |
 | `--workers` | `1` | Parallel workers for fuzzing the CSV |
 | `--signature-workers` | same as `--workers` | Parallel workers for signature counting |
@@ -90,9 +90,9 @@ print(result.to_dict())  # serializable dict with patterns, counts, metadata
 ```
 
 Both functions return a `Result` with:
-- `result.patterns` — list of `PatternResult` (pattern_id, representative_line, count, share, jaccard_metadata)
-- `result.counts` — `{"input_lines": N, "pattern_count": M}`
-- `result.metadata` — algorithm name, thresholds, source type
+- `result.patterns` - list of `PatternResult` (pattern_id, representative_line, count, share, jaccard_metadata)
+- `result.counts` - `{"input_lines": N, "pattern_count": M}`
+- `result.metadata` - algorithm name, thresholds, source type
 
 Key parameters (same as CLI):
 
@@ -133,8 +133,8 @@ pattern_id,count,share,representative_line,jaccard_match_threshold
 
 fuzzylogs follows a strict stdout/stderr split:
 
-- **stdout** — structured data only (CSV or JSON patterns)
-- **stderr** — human diagnostics, progress, summary
+- **stdout** - structured data only (CSV or JSON patterns)
+- **stderr** - human diagnostics, progress, summary
 
 This makes it safe to use in pipelines without filtering:
 
