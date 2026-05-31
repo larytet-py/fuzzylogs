@@ -143,6 +143,25 @@ python fuzzylogs.py --logfile logs.csv --output-format json --quiet \
   | jq '.patterns[] | select(.share > 0.1)'
 ```
 
+## Performance
+
+Measured on a 12-core machine, 100k synthetic log lines, `/usr/share/dict/words`:
+
+| workers | lines/s | lines/s/core | speedup |
+|---------|---------|--------------|---------|
+| 1 | 11,531 | 11,531 | 1.00x |
+| 2 | 11,187 | 5,594 | 0.97x |
+| 4 | 12,422 | 3,106 | 1.08x |
+| 12 | 11,559 | 963 | 1.00x |
+
+The Markov fuzzing pass is the bottleneck and does not parallelize well via `analyze_lines` (in-process, GIL-bound). `--workers` helps more with `analyze_csv` on large CSV files since that path uses `multiprocessing`. Expect ~10-12k lines/s on modern hardware.
+
+To reproduce:
+
+```bash
+python tests/benchmark.py --lines 100000
+```
+
 ## Tuning
 
 **Too many patterns** (similar lines not merging): lower `--match-threshold` (e.g. `0.5`)
