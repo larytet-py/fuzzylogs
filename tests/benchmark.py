@@ -7,6 +7,7 @@ Usage:
 """
 
 import argparse
+import csv
 import multiprocessing
 import random
 import sys
@@ -14,7 +15,7 @@ import tempfile
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import fuzzylogs
 
@@ -40,18 +41,18 @@ def _rand_ip():
 def _rand_n():
     return str(random.randint(1, 9999))
 
-def generate_lines(n: int) -> list:
-    lines = []
-    for _ in range(n):
-        template = random.choice(TEMPLATES)
-        line = template.replace("{id}", _rand_id()).replace("{ip}", _rand_ip()).replace("{n}", _rand_n())
-        lines.append(line)
-    return lines
+def generate_csv(path: str, n: int) -> None:
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        for _ in range(n):
+            template = random.choice(TEMPLATES)
+            line = template.replace("{id}", _rand_id()).replace("{ip}", _rand_ip()).replace("{n}", _rand_n())
+            writer.writerow([line])
 
-def run_once(lines, workers, dict_path):
+def run_once(csv_path: str, workers: int, dict_path: str) -> tuple:
     t0 = time.perf_counter()
-    result = fuzzylogs.analyze_lines(
-        lines,
+    result = fuzzylogs.analyze_csv(
+        csv_path,
         dict_path=dict_path,
         workers=workers,
         signature_workers=workers,
@@ -76,8 +77,11 @@ def main():
     cpu_count = multiprocessing.cpu_count()
     worker_counts = sorted(set([1, 2, 4, cpu_count]))
 
-    print(f"Generating {args.lines:,} log lines...", flush=True)
-    lines = generate_lines(args.lines)
+    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w") as tmp:
+        csv_path = tmp.name
+
+    print(f"Generating {args.lines:,} log lines -> {csv_path}", flush=True)
+    generate_csv(csv_path, args.lines)
     print(f"Dictionary: {dict_path}")
     print(f"CPUs available: {cpu_count}")
     print()
@@ -86,11 +90,10 @@ def main():
     results = []
 
     for workers in worker_counts:
-        # warmup
         for _ in range(args.warmup):
-            run_once(lines, workers, dict_path)
+            run_once(csv_path, workers, dict_path)
 
-        elapsed, pattern_count = run_once(lines, workers, dict_path)
+        elapsed, pattern_count = run_once(csv_path, workers, dict_path)
         throughput = args.lines / elapsed
         if workers == 1:
             baseline_throughput = throughput
@@ -98,6 +101,8 @@ def main():
         per_core = throughput / workers
         results.append((workers, elapsed, throughput, per_core, speedup, pattern_count))
         print(f"workers={workers:2d}  {elapsed:5.2f}s  {throughput:>10,.0f} lines/s  {per_core:>10,.0f} lines/s/core  speedup={speedup:.2f}x  patterns={pattern_count}", flush=True)
+
+    Path(csv_path).unlink(missing_ok=True)
 
     print()
     print("| workers | lines/s | lines/s/core | speedup |")
