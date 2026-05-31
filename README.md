@@ -147,14 +147,14 @@ python fuzzylogs.py --logfile logs.csv --output-format json --quiet \
 
 Measured on a 12-core machine, `/usr/share/dict/words`.
 
-**Worker scaling** (100k lines, Markov chain built once, not included in timing):
+**Worker scaling** (500k lines, Markov chain built once, not included in timing):
 
 | workers | lines/s | lines/s/core | speedup |
 |---------|---------|--------------|---------|
-| 1 | 12,651 | 12,651 | 1.00x |
-| 2 | 20,052 | 10,026 | 1.59x |
-| 4 | 35,867 | 8,967 | 2.84x |
-| 12 | 47,182 | 3,932 | 3.73x |
+| 1 | 15,541 | 15,541 | 1.00x |
+| 2 | 21,602 | 10,801 | 1.39x |
+| 4 | 39,580 | 9,895 | 2.55x |
+| 8 | 53,554 | 6,694 | 3.45x |
 
 **File size scaling** (4 workers, `analyze_csv` including Markov chain build ~2s):
 
@@ -170,7 +170,7 @@ Measured on a 12-core machine, `/usr/share/dict/words`.
 To reproduce:
 
 ```bash
-python tests/benchmark_workers.py --lines 100000  # worker scaling, Markov excluded
+python tests/benchmark_workers.py --lines 500000  # worker scaling, Markov excluded
 python tests/benchmark.py --workers 4              # file size scaling, analyze_csv
 ```
 

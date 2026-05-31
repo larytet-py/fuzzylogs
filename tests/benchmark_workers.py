@@ -90,7 +90,7 @@ def main():
         sys.exit(1)
 
     cpu_count = multiprocessing.cpu_count()
-    worker_counts = sorted(set([1, 2, 4, cpu_count]))
+    worker_counts = sorted(set([1, 2, 4, 8]))
 
     with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w") as tmp:
         csv_path = tmp.name
