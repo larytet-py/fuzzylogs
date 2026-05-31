@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import multiprocessing
 import os
 import re
@@ -456,17 +457,15 @@ def _build_normalized_signature_counts(
     return ordered_counts
 
 
-def _cluster_patterns(
-    lines: Iterable[Tuple[str, int]],
+def _cluster_lines_chunk(
+    lines_with_counts: List[Tuple[str, int]],
     match_threshold: float,
-) -> Tuple[List[Dict[str, Any]], int]:
+) -> List[Dict[str, Any]]:
     patterns: List[Dict[str, Any]] = []
     token_index: DefaultDict[str, Set[int]] = defaultdict(set)
-    total_lines = 0
     jaccard = Jaccard()
-
-    for line, line_count in lines:
-        total_lines += cluster_pattern_line(
+    for line, line_count in lines_with_counts:
+        cluster_pattern_line(
             line=line,
             line_count=line_count,
             patterns=patterns,
@@ -474,9 +473,43 @@ def _cluster_patterns(
             jaccard=jaccard,
             match_threshold=match_threshold,
         )
+    return patterns
 
-    patterns.sort(key=lambda p: int(p["count"]), reverse=True)
-    return patterns, total_lines
+
+def _cluster_patterns(
+    lines: Iterable[Tuple[str, int]],
+    match_threshold: float,
+    workers: int = 1,
+) -> Tuple[List[Dict[str, Any]], int]:
+    lines_list = list(lines)
+    total_lines = sum(count for _, count in lines_list)
+
+    effective_workers = max(1, workers)
+    if effective_workers == 1 or len(lines_list) < effective_workers * 2:
+        patterns = _cluster_lines_chunk(lines_list, match_threshold)
+        patterns.sort(key=lambda p: int(p["count"]), reverse=True)
+        return patterns, total_lines
+
+    chunk_size = math.ceil(len(lines_list) / effective_workers)
+    chunks = [
+        lines_list[i : i + chunk_size]
+        for i in range(0, len(lines_list), chunk_size)
+    ]
+
+    with multiprocessing.Pool(processes=effective_workers) as pool:
+        partial_patterns_list = pool.starmap(
+            _cluster_lines_chunk,
+            [(chunk, match_threshold) for chunk in chunks],
+        )
+
+    partial_representatives = [
+        (p["representative_line"], int(p["count"]))
+        for partial_patterns in partial_patterns_list
+        for p in partial_patterns
+    ]
+    merged = _cluster_lines_chunk(partial_representatives, match_threshold)
+    merged.sort(key=lambda p: int(p["count"]), reverse=True)
+    return merged, total_lines
 
 
 def _build_result(
@@ -520,6 +553,7 @@ def _analyze_fuzzed_lines(
     match_threshold: float,
     source_type: str,
     signature_workers: int,
+    cluster_workers: int,
     chunk_size: int,
 ) -> Result:
     normalized = _build_normalized_signature_counts(
@@ -531,6 +565,7 @@ def _analyze_fuzzed_lines(
     clustered, total_lines = _cluster_patterns(
         ((item.representative_line, item.count) for item in normalized),
         match_threshold=match_threshold,
+        workers=cluster_workers,
     )
 
     return _build_result(clustered, total_lines, match_threshold=match_threshold, source_type=source_type)
@@ -592,6 +627,7 @@ def analyze_lines(
         match_threshold=match_threshold,
         source_type="lines",
         signature_workers=resolved_signature_workers,
+        cluster_workers=resolved_workers,
         chunk_size=chunk_size,
     )
 
@@ -654,6 +690,7 @@ def analyze_csv(
         match_threshold=match_threshold,
         source_type="csv",
         signature_workers=resolved_signature_workers,
+        cluster_workers=resolved_workers,
         chunk_size=chunk_size,
     )
 

@@ -149,12 +149,12 @@ Measured on a 12-core machine, 100k synthetic log lines, `/usr/share/dict/words`
 
 | workers | lines/s | lines/s/core | speedup |
 |---------|---------|--------------|---------|
-| 1 | 11,270 | 11,270 | 1.00x |
-| 2 | 14,106 | 7,053 | 1.25x |
-| 4 | 21,507 | 5,377 | 1.91x |
-| 12 | 23,811 | 1,984 | 2.11x |
+| 1 | 12,041 | 12,041 | 1.00x |
+| 2 | 16,649 | 8,324 | 1.38x |
+| 4 | 22,702 | 5,676 | 1.89x |
+| 12 | 26,436 | 2,203 | 2.20x |
 
-`--workers` parallelizes the Markov fuzzing pass via `multiprocessing` when using CSV input (`analyze_csv`). 4 workers gives ~2x throughput; gains flatten beyond that as the Jaccard clustering pass is single-threaded. Expect ~10k lines/s single-core, ~20-24k with 4+ workers.
+`--workers` parallelizes both the Markov fuzzing pass and the Jaccard clustering pass. Clustering splits the deduplicated signature list into per-worker chunks, clusters each independently, then merges the partial results in a final single-threaded pass. Expect ~12k lines/s single-core, ~26k with 12 workers.
 
 To reproduce:
 
