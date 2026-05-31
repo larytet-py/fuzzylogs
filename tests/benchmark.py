@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-Benchmark fuzzylogs throughput: lines/sec per core for 1, 2, 4, N workers.
+Benchmark fuzzylogs throughput across file sizes using analyze_csv.
 
 Usage:
-    python benchmark.py [--lines 50000] [--dict-path /usr/share/dict/words]
+    python tests/benchmark.py [--workers 4] [--dict-path /usr/share/dict/words]
 """
 
 import argparse
 import csv
 import multiprocessing
+import os
 import random
 import sys
 import tempfile
@@ -32,6 +33,8 @@ TEMPLATES = [
     "DEBUG heartbeat node={id} latency={n}ms",
 ]
 
+TARGET_SIZES_MB = [10, 20, 50, 100]
+
 def _rand_id():
     return format(random.randint(0, 0xFFFFFFFF), "08x")
 
@@ -41,45 +44,34 @@ def _rand_ip():
 def _rand_n():
     return str(random.randint(1, 9999))
 
-def generate_csv(path: str, n: int) -> None:
+def generate_csv(path: str, target_bytes: int) -> int:
+    lines = 0
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        for _ in range(n):
+        while f.tell() < target_bytes:
             template = random.choice(TEMPLATES)
             line = template.replace("{id}", _rand_id()).replace("{ip}", _rand_ip()).replace("{n}", _rand_n())
             writer.writerow([line])
+            lines += 1
+    return lines
 
-def run_once(csv_path: str, workers: int, dict_path: str, mc) -> tuple:
+def run_once(csv_path: str, workers: int, dict_path: str) -> tuple:
     t0 = time.perf_counter()
-    fuzzed = fuzzylogs._fuzz_csv_rows(
+    result = fuzzylogs.analyze_csv(
         csv_path,
-        mc=mc,
-        threshold=fuzzylogs._DEFAULT_MARKOV_SCORE_THRESHOLD,
-        replace_abbreviations=False,
-        dictionary_path=dict_path,
-        domain_words=[],
-        order=3,
-        smoothing=1.0,
-        max_dictionary_words=None,
+        dict_path=dict_path,
         workers=workers,
-        chunk_size=fuzzylogs._DEFAULT_CHUNK_SIZE,
-    )
-    result = fuzzylogs._analyze_fuzzed_lines(
-        fuzzed,
-        match_threshold=0.7,
-        source_type="csv",
         signature_workers=workers,
-        cluster_workers=workers,
-        chunk_size=fuzzylogs._DEFAULT_CHUNK_SIZE,
+        quiet=True,
     )
     elapsed = time.perf_counter() - t0
-    return elapsed, result.counts["pattern_count"]
+    return elapsed, result.counts["input_lines"], result.counts["pattern_count"]
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--lines", type=int, default=50_000)
+    parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--dict-path", type=str, default=None)
-    parser.add_argument("--warmup", type=int, default=1, help="warmup runs before timing")
+    parser.add_argument("--warmup", type=int, default=0)
     args = parser.parse_args()
 
     try:
@@ -88,46 +80,38 @@ def main():
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    cpu_count = multiprocessing.cpu_count()
-    worker_counts = sorted(set([1, 2, 4, cpu_count]))
-
-    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w") as tmp:
-        csv_path = tmp.name
-
-    print(f"Generating {args.lines:,} log lines -> {csv_path}", flush=True)
-    generate_csv(csv_path, args.lines)
+    print(f"workers={args.workers}  CPUs available={multiprocessing.cpu_count()}")
     print(f"Dictionary: {dict_path}")
-    print(f"CPUs available: {cpu_count}")
-
-    print("Building Markov chain (one-time, not included in timing)...", flush=True)
-    mc = fuzzylogs.build_markov_chain(
-        dict_path=dict_path, domain_words=[], order=3, smoothing=1.0, quiet=True,
-    )
+    print(f"Note: analyze_csv includes Markov chain build (~2s) in each run")
     print()
 
-    baseline_throughput = None
     results = []
 
-    for workers in worker_counts:
+    for size_mb in TARGET_SIZES_MB:
+        target_bytes = size_mb * 1024 * 1024
+
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w") as tmp:
+            csv_path = tmp.name
+
+        line_count = generate_csv(csv_path, target_bytes)
+        actual_mb = os.path.getsize(csv_path) / 1024 / 1024
+
         for _ in range(args.warmup):
-            run_once(csv_path, workers, dict_path, mc)
+            run_once(csv_path, args.workers, dict_path)
 
-        elapsed, pattern_count = run_once(csv_path, workers, dict_path, mc)
-        throughput = args.lines / elapsed
-        if workers == 1:
-            baseline_throughput = throughput
-        speedup = throughput / baseline_throughput if baseline_throughput else 1.0
-        per_core = throughput / workers
-        results.append((workers, elapsed, throughput, per_core, speedup, pattern_count))
-        print(f"workers={workers:2d}  {elapsed:5.2f}s  {throughput:>10,.0f} lines/s  {per_core:>10,.0f} lines/s/core  speedup={speedup:.2f}x  patterns={pattern_count}", flush=True)
+        elapsed, input_lines, pattern_count = run_once(csv_path, args.workers, dict_path)
+        throughput_lines = input_lines / elapsed
+        throughput_mb = actual_mb / elapsed
+        results.append((size_mb, actual_mb, input_lines, elapsed, throughput_lines, throughput_mb, pattern_count))
+        print(f"{size_mb:4d} MB  {input_lines:>8,} lines  {elapsed:6.1f}s  {throughput_lines:>9,.0f} lines/s  {throughput_mb:5.1f} MB/s  patterns={pattern_count}", flush=True)
 
-    Path(csv_path).unlink(missing_ok=True)
+        Path(csv_path).unlink(missing_ok=True)
 
     print()
-    print("| workers | lines/s | lines/s/core | speedup |")
-    print("|---------|---------|--------------|---------|")
-    for workers, elapsed, throughput, per_core, speedup, _ in results:
-        print(f"| {workers} | {throughput:,.0f} | {per_core:,.0f} | {speedup:.2f}x |")
+    print(f"| size | lines | time | lines/s | MB/s |")
+    print(f"|------|-------|------|---------|------|")
+    for size_mb, actual_mb, lines, elapsed, tl, tmb, _ in results:
+        print(f"| {size_mb} MB | {lines:,} | {elapsed:.1f}s | {tl:,.0f} | {tmb:.1f} |")
 
 if __name__ == "__main__":
     main()
