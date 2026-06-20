@@ -150,3 +150,7 @@ For our use case â€” 40M logs/day pulled from Elasticsearch in 1-minute chunks â
 ---
 
 *The code is ~200 lines of Python, no dependencies beyond a system dictionary. Worth a read if you like elegant small tools: [github.com/larytet-py/fuzzylogs](https://github.com/larytet-py/fuzzylogs)*
+
+---
+
+*[Read this article on Medium](https://medium.com/@arkady.miasnikov/fuzzylogs-article-medium-md-at-article-medium-post-larytet-py-fuzzylogs-a085779a05f7)*
