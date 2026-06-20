@@ -10,7 +10,23 @@ You just shipped a deploy. Everything looks green — dashboards nominal, no ale
 
 You have 40M log lines a day flowing into Elasticsearch. Somewhere in there, the deploy may have introduced new error patterns you've never seen before. The question isn't "are there errors?" — there are always errors. The question is: **did anything new show up after this deploy that wasn't there before?**
 
-You can't eyeball 40M lines. You can write Kibana queries, but only for errors you already know to look for. What you really need is a diff — *pre-deploy log patterns* vs *post-deploy log patterns* — so the new stuff jumps out.
+Here's what a typical minute of WARNING/ERROR logs looks like in a trading system:
+
+```
+WARNING  order a3f9b12c rejected: price 184.52 outside allowed slippage for SPY
+WARNING  order 77d401ea rejected: price 184.61 outside allowed slippage for SPY
+WARNING  order c90e3311 rejected: price 184.49 outside allowed slippage for SPY
+ERROR    market data feed 9f2a timeout after 2003ms, symbol=AAPL session=4d71c8
+ERROR    market data feed b31e timeout after 1987ms, symbol=AAPL session=3a09f1
+WARNING  position limit breached: account f3a09b21 held 14823 shares of IWM, limit=14000
+WARNING  position limit breached: account 2c18d77f held 14951 shares of IWM, limit=14000
+ERROR    risk check failed for order 8e1cd920: margin utilization 94.3% exceeds threshold
+ERROR    risk check failed for order 551fa7b3: margin utilization 91.7% exceeds threshold
+```
+
+That's one minute. You have 1,440 minutes in a day, 15,000+ instruments, dozens of services. You can't eyeball it. You can write Kibana queries, but only for errors you already know to look for.
+
+What you really need is a diff — *yesterday's log patterns* vs *today's log patterns* — so anything new jumps out. And the keyword is *patterns*: you don't want to compare individual lines (every order ID is unique), you want to compare the *shapes* of log lines across days.
 
 Two mathematical ideas — Markov chains and Jaccard similarity — make that diff possible. Let me explain both, simply, then show how they combine.
 
