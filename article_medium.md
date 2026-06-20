@@ -38,12 +38,12 @@ Two ideas — Markov chains and Jaccard similarity — make that diff possible. 
 
 Picture a small neighbourhood diner. The menu is:
 
-If a customer ordered *this* → probability they also want *that*:
-
-- **Bacon** on the plate: 80% chance they want eggs, 50% fries, 30% banana shake, 20% milkshake, 10% hamburger
-- **Eggs** on the plate: 60% chance they want bacon, 30% fries, 20% banana shake, 10% milkshake, 5% hamburger
-- **Hamburger** on the plate: 85% chance they want fries, 40% milkshake, 15% bacon, 10% eggs, 5% banana shake
-- **Banana shake** on the plate: 60% chance they want milkshake, 25% bacon, 20% fries, 15% eggs, 10% hamburger
+| Item | Bacon | Eggs | Banana shake | Hamburger | Fries | Milkshake |
+|---|---|---|---|---|---|---|
+| **Bacon** | — | 80% | 30% | 10% | 50% | 20% |
+| **Eggs** | 60% | — | 20% | 5% | 30% | 10% |
+| **Hamburger** | 15% | 10% | 5% | — | 85% | 40% |
+| **Banana shake** | 25% | 15% | — | 10% | 20% | 60% |
 
 Each row is the probability that a customer who ordered *that item* also orders the column item. That's a **Markov chain** — a table of "if you're here, what's next?" probabilities.
 
