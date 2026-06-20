@@ -6,21 +6,13 @@
 
 ## The Problem with Logs
 
-You wake up at 2 AM to an alert. You ssh into the box and do what every engineer does: `tail -f app.log`.
+You just shipped a deploy. Everything looks green — dashboards nominal, no alerts firing. But did it *actually* go clean?
 
-And you see this:
+You have 40M log lines a day flowing into Elasticsearch. Somewhere in there, the deploy may have introduced new error patterns you've never seen before. The question isn't "are there errors?" — there are always errors. The question is: **did anything new show up after this deploy that wasn't there before?**
 
-```
-ERROR user 8f3a9c21 failed login from 192.168.1.42
-ERROR user b2d77f03 failed login from 10.0.0.17
-ERROR user 4af10c99 failed login from 172.16.0.5
-ERROR user 8f3a9c21 failed login from 192.168.1.42
-... (40,000 more lines)
-```
+You can't eyeball 40M lines. You can write Kibana queries, but only for errors you already know to look for. What you really need is a diff — *pre-deploy log patterns* vs *post-deploy log patterns* — so the new stuff jumps out.
 
-Is this one problem or forty thousand? You can't tell. The noise is drowning the signal.
-
-Two mathematical ideas — Markov chains and Jaccard similarity — can fix this. Let me explain both, simply, then show how they combine.
+Two mathematical ideas — Markov chains and Jaccard similarity — make that diff possible. Let me explain both, simply, then show how they combine.
 
 ---
 
