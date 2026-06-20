@@ -49,9 +49,9 @@ Each row is the probability that a customer who ordered *that item* also orders 
 
 Now ask a useful question: a customer ordered **bacon** and **eggs** — what's the likelihood the menu also has a **milkshake**? Trace the chain: bacon → milkshake is 20%, eggs → milkshake is 10%. Both paths are plausible. This is a known menu. The model is confident.
 
-Now ask the same question about `a3f9b12c` — does the menu have anything that follows from that? The chain has never seen a sequence like it. Every transition probability is near zero. **This item is not on any menu. It's probably noise.**
+Now ask the same question about **durian** — does the menu have anything that follows from that? The chain has never seen it. Every transition is near zero. **This item is not on any menu. It's probably noise.**
 
-This is exactly how `fuzzylogs` uses Markov chains — but on *characters* instead of menu items. The model is trained on an English dictionary and learns, for each pair of characters, how likely the next character is. Real words like `rejected` or `timeout` score high. A hex order ID like `a3f9b12c` scores near zero. The token gets replaced with `.`.
+This is exactly how `fuzzylogs` uses Markov chains — but on *characters* instead of menu items. The model is trained on an English dictionary and learns, for each pair of characters, how likely the next character is. Real words like `rejected` or `timeout` score high. A hex order ID like `a3f9b12c` — which looks to the character model like "durian" looks to the diner — scores near zero. The token gets replaced with `.`.
 
 The chain doesn't need to know what a UUID is. It just knows `a3f9b12c` doesn't *feel* like English — and that's enough.
 
