@@ -1,4 +1,4 @@
-# When Your Logs Are Lying to You (And How Markov Chains + Jaccard Similarity Can Help)
+# Clustering 40M Unstructured Logs a Day on a Laptop with (almost) Zero Regex
 
 *A lightweight explainer on two elegant ideas — and a tool that uses both*
 
