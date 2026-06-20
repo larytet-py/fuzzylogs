@@ -36,19 +36,24 @@ Two ideas — Markov chains and Jaccard similarity — make that diff possible. 
 
 ## Part 1: Markov Chains — Does This Token Look Like English?
 
-Imagine you run a diner. You track what customers tend to order together. Over time, you notice:
+Picture a small neighbourhood diner. The menu is:
 
-- Someone who orders **bacon** has a 70% chance of also ordering **eggs**, and a 40% chance of ordering a **banana shake**
-- Someone who orders **hamburger** has a 5% chance of ordering a **banana shake**, but an 80% chance of ordering **fries**
-- Someone who just ordered **banana** ... probably isn't ordering a hamburger next
+| Item | Bacon | Eggs | Banana shake | Hamburger | Fries | Milkshake |
+|---|---|---|---|---|---|---|
+| **Bacon** | — | 80% | 30% | 10% | 50% | 20% |
+| **Eggs** | 60% | — | 20% | 5% | 30% | 10% |
+| **Hamburger** | 15% | 10% | 5% | — | 85% | 40% |
+| **Banana shake** | 25% | 15% | — | 10% | 20% | 60% |
 
-You've built a **Markov chain** — a model where the probability of the *next* item depends on the *current* item. Each state (menu item) has a table of transition probabilities to the next state.
+Each row is the probability that a customer who ordered *that item* also orders the column item. That's a **Markov chain** — a table of "if you're here, what's next?" probabilities.
 
-Now flip this around: if someone orders `xq7f29m`, you can ask your chain — *how likely is this sequence, given what I know about how real orders flow?* The answer: essentially zero. `xq7f29m` is not on any menu. It doesn't follow any known pattern. **It's probably noise.**
+Now ask a useful question: a customer ordered **bacon** and **eggs** — what's the likelihood the menu also has a **milkshake**? Trace the chain: bacon → milkshake is 20%, eggs → milkshake is 10%. Both paths are plausible. This is a known menu. The model is confident.
 
-This is exactly how `fuzzylogs` uses Markov chains — but on *characters* instead of menu items. The model is trained on an English dictionary and learns, for each pair of characters, how likely the next character is. Real words like `failed` or `login` produce high probabilities. A SHA hash like `8f3a9c21` produces near-zero probability. The token gets replaced with `.`.
+Now ask the same question about `a3f9b12c` — does the menu have anything that follows from that? The chain has never seen a sequence like it. Every transition probability is near zero. **This item is not on any menu. It's probably noise.**
 
-The chain doesn't need to know what a UUID is. It just knows `8f3a9c21` doesn't *feel* like English — and that's enough.
+This is exactly how `fuzzylogs` uses Markov chains — but on *characters* instead of menu items. The model is trained on an English dictionary and learns, for each pair of characters, how likely the next character is. Real words like `rejected` or `timeout` score high. A hex order ID like `a3f9b12c` scores near zero. The token gets replaced with `.`.
+
+The chain doesn't need to know what a UUID is. It just knows `a3f9b12c` doesn't *feel* like English — and that's enough.
 
 ---
 
