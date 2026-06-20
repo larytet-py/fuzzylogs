@@ -2,6 +2,8 @@
 
 *A lightweight explainer on two elegant ideas — and a tool that uses both*
 
+> **Not another Drain/Spell/LogBERT/logpai post.** Those are great tools — but they come with parsers to configure, models to train, dependencies to manage, and papers to read. This is about a 200-line Python script with no ML models, no parse templates, and no prior knowledge of your log format. If you've already evaluated the heavy hitters and want something you can drop in and run today, keep reading.
+
 ---
 
 ## The Problem with Logs
@@ -10,7 +12,7 @@ You just shipped a deploy. Everything looks green — dashboards nominal, no ale
 
 You have 40M log lines a day flowing into Elasticsearch. Somewhere in there, the deploy may have introduced new error patterns you've never seen before. The question isn't "are there errors?" — there are always errors. The question is: **did anything new show up after this deploy that wasn't there before?**
 
-Here's what a typical minute of WARNING/ERROR logs looks like in a trading system:
+Here's what a typical sample of WARNING/ERROR logs looks like in a trading system:
 
 ```
 WARNING  order a3f9b12c rejected: price 184.52 outside allowed slippage for SPY
@@ -24,11 +26,11 @@ ERROR    risk check failed for order 8e1cd920: margin utilization 94.3% exceeds 
 ERROR    risk check failed for order 551fa7b3: margin utilization 91.7% exceeds threshold
 ```
 
-That's one minute. You have 1,440 minutes in a day, 15,000+ instruments, dozens of services. You can't eyeball it. You can write Kibana queries, but only for errors you already know to look for.
+You have 1,440 minutes in a day, 15,000+ instruments, dozens of services. You can't eyeball it. You can write Kibana queries, but only for errors you already know to look for.
 
 What you really need is a diff — *yesterday's log patterns* vs *today's log patterns* — so anything new jumps out. And the keyword is *patterns*: you don't want to compare individual lines (every order ID is unique), you want to compare the *shapes* of log lines across days.
 
-Two mathematical ideas — Markov chains and Jaccard similarity — make that diff possible. Let me explain both, simply, then show how they combine.
+Two ideas — Markov chains and Jaccard similarity — make that diff possible. Let me explain both, simply, then show how they combine.
 
 ---
 
