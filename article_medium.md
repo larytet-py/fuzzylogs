@@ -153,4 +153,4 @@ For our use case â€” 40M logs/day pulled from Elasticsearch in 1-minute chunks â
 
 ---
 
-*[Read this article on Medium](https://medium.com/@arkady.miasnikov/fuzzylogs-article-medium-md-at-article-medium-post-larytet-py-fuzzylogs-a085779a05f7)*
+*[Read this article on Medium](https://medium.com/@arkady.miasnikov/clustering-40m-unstructured-logs-a-day-on-a-laptop-with-almost-zero-regex-79bf04135c7b)*
